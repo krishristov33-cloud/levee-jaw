@@ -761,7 +761,7 @@ const SKIN = {
   music: { track: 'theme.mp3', volume: 0.5, fadeIn: 1.2 },
   // the croc's idle animation: idle1 loops; after rare[0]..rare[1] idle1 loops, idle2 plays once; fade = crossfade ms
   // at each switch between them (both start from the same pose); ahead = ms of frames decoded ahead of the clock
-  croc: { rare: [3, 6], fade: 320, ahead: 600 },
+  croc: { rare: [3, 6], fade: 320, ahead: 400 },
   // board shake on key moments: amp = stage px (capped by layout.json shakeMax), ms = length, dir 'y' = vertical thump
   shake: { scatterLand: { amp: 2, ms: 170, dir: 'y' }, copy: { amp: 3, ms: 280 }, crown: { amp: 5, ms: 560 },
     feature: { amp: 4, ms: 460 }, big: { amp: 3, ms: 420 }, mega: { amp: 5, ms: 620 }, max: { amp: 7, ms: 820 } },
@@ -1161,6 +1161,7 @@ function setCell(d, s, reel, bottom) {
     if (cur && cur.tagName === 'IMG') { setSrc(cur, spriteURL[s]); cur.alt = s; return; }
     const im = document.createElement('img');
     setSrc(im, spriteURL[s]); im.alt = s; im.draggable = false;
+    im.decoding = 'sync';                                            // phones: paint it decoded, never a blank first
     im.onerror = () => { spriteOK[s] = false; d.dataset.s = ''; setCell(d, s, reel, b); };
     if (cur) cur.replaceWith(im); else d.appendChild(im);
   } else {
@@ -1246,6 +1247,7 @@ function rollReel(r, col, delayMs, durMs) {
       { transform: 'translateY(0px)' },
     ], { duration: durMs, delay: delayMs, fill: 'forwards' });
     activeAnims.push(anim);
+    anim.pause(); stripReady(st).then(() => { if (anim.playState === 'paused') anim.play(); });
     const blurOn = setTimeout(() => st.classList.add('rolling'), delayMs + durMs * 0.08);
     const blurOff = setTimeout(() => st.classList.remove('rolling'), delayMs + durMs * 0.8);
     anim.onfinish = () => {
@@ -1258,6 +1260,10 @@ function rollReel(r, col, delayMs, durMs) {
     };
   });
 }
+// every symbol on a strip decoded before the strip moves: phones decode lazily, and a strip that started moving with
+// undecoded symbols was painted empty until it stopped (the reels looked blank while spinning). At most 600 ms.
+const stripReady = (st) => Promise.race([new Promise((r) => setTimeout(r, 600)),
+  Promise.all([...st.querySelectorAll('img')].map((im) => (im.decode ? im.decode().catch(() => {}) : null)))]);
 function quickStop() { activeAnims.forEach((a) => { try { a.finish(); } catch (e) {} }); activeAnims = []; }
 
 async function rollSet(grid, reels) {
