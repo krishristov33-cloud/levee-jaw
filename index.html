@@ -298,6 +298,11 @@
   #fatal{background:#000c;color:#fff}
   /* the board (frame, reel backgrounds, reel 2's caps): its own layer above the plate so it can shake (SKIN js) */
   #reelframe{position:absolute;pointer-events:none}
+  /* phones / tablets and Apple browsers: no blur on the spinning strip. The SVG #vblur filter on a GPU-animated layer
+     renders nothing on iPhones, and any filter on a strip that tall can exceed a phone's GPU texture limit, so the
+     symbols vanished mid-spin. Desktop Chrome / Firefox keep the motion blur. (.apple is set in SKIN js) */
+  .apple .strip.rolling{filter:none}
+  @media (pointer:coarse){.strip.rolling{filter:none}}
   /* the croc: an animated canvas in front of the frame and the dock (SKIN js croc player) */
   #croc{position:absolute;pointer-events:none}
 /* SKIN:END css */</style>
@@ -824,6 +829,7 @@ const ASSET = {
 };
 /* ---- geometry, derived from the layout under SALT PIMP's constant names ---- */
 const LY = LAYOUT || {};
+if (/Apple/.test(navigator.vendor || '')) document.documentElement.classList.add('apple');   // see .apple .strip.rolling
 const pair = (v) => (Array.isArray(v) ? [v[0], v[1]] : v && v.w != null ? [v.x, v.x + v.w] : null);
 const pairY = (v) => (Array.isArray(v) ? [v[0], v[1]] : v && v.h != null ? [v.y, v.y + v.h] : null);
 const LC = LY.cells || SKIN.cells;
@@ -1338,7 +1344,7 @@ function countWin(toCents, ms) {
 /* ================================================================================================ sfx */
 const sfx = (() => {
   let ctx = null, soundOn = true, musicOn = true, musicTimer = null;
-  const ac = () => { if (!ctx) { try { ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} } if (ctx && ctx.state === 'suspended') ctx.resume(); return ctx; };
+  const ac = () => { if (!ctx) { try { ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} } if (ctx && ctx.state !== 'running') ctx.resume(); return ctx; };   // iOS: also 'interrupted'
   function blip(freq, dur, type, vol, when) {
     const c = ac(); if (!c) return;
     const t = c.currentTime + (when || 0);
@@ -1791,6 +1797,10 @@ const syncFull = () => { if ($('bFull')) $('bFull').classList.toggle('on', !!(do
 document.addEventListener('fullscreenchange', syncFull); document.addEventListener('webkitfullscreenchange', syncFull);
 addEventListener('pointerdown', () => sfx.unlock(), { once: true });
 addEventListener('keydown', () => sfx.unlock(), { once: true });
+// iPhone: a touch START does not count as permission to play; the touch's END / click does (harmless elsewhere)
+['touchend', 'pointerup', 'click'].forEach((t) => addEventListener(t, () => sfx.unlock(), { once: true }));
+// iPhone: play as media, so the ring / silent switch does not mute the game (Safari 16.4+)
+if (navigator.audioSession) navigator.audioSession.type = 'playback';
 
 /* keyboard: every control is a focusable role=button (Tab + Enter), plus shortcuts */
 document.querySelectorAll('.btn:not(.deco)').forEach((b) => {
