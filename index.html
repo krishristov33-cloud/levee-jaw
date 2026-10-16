@@ -111,12 +111,12 @@
   .popring{position:absolute;border-radius:50%;pointer-events:none}
   /* LJ fork: anticipation glow around a reel that is spinning longer (colours: SKIN css .antic.scatter / .wild) */
   .antic{position:absolute;border-radius:18px;pointer-events:none;overflow:hidden;border:7px solid var(--ac);
+    box-shadow:0 0 50px 16px var(--ac),inset 0 0 50px 14px var(--ac);will-change:opacity;
     animation:anticPulse .42s ease-in-out infinite alternate}
-  .antic::after{content:'';position:absolute;left:0;right:0;height:40%;top:-40%;opacity:.6;
+  .antic::after{content:'';position:absolute;left:0;right:0;height:40%;top:-40%;opacity:.6;will-change:transform;
     background:linear-gradient(180deg,transparent,var(--ac2),transparent);animation:anticSweep .62s linear infinite}
-  @keyframes anticPulse{from{box-shadow:0 0 24px 6px var(--ac),inset 0 0 26px 6px var(--ac);opacity:.85}
-    to{box-shadow:0 0 60px 22px var(--ac),inset 0 0 56px 16px var(--ac);opacity:1}}
-  @keyframes anticSweep{to{top:100%}}
+  @keyframes anticPulse{from{opacity:.55}to{opacity:1}}           /* opacity only: no repaint while the reels spin */
+  @keyframes anticSweep{to{transform:translateY(350%)}}
   @media (prefers-reduced-motion: reduce){.antic,.antic::after{animation:none}}
   .spark{position:absolute;width:12px;height:12px;border-radius:50%;pointer-events:none}
   /* LJ fork: debug overlay (G, or on whenever the QA badge is) */
@@ -912,9 +912,6 @@ const SKIN = {
   // PLACEHOLDER: final character animation
   crocFlash: { ack: 520, feature: 1100, glow: '#ffd15a' },
   xwGrow: 400,
-  // reel motion: ms = [kick up, speed up, slow down, settle] (fixed; the rest of a spin cruises), speed = top speed
-  // px/ms, over = overshoot px at the stop
-  reelRun: { normal: { ms: [70, 170, 420, 120], speed: 6.5, over: 30 }, turbo: { ms: [40, 90, 200, 70], speed: 7.5, over: 16 } },
   // anticipation: extra spin (ms) for each reel that is waited on, after 2 scatters / after a croc Expanding Wild;
   // turbo = factor in turbo mode
   antic: { scatter: 1400, wild: 1000, turbo: 0.5 },
@@ -1519,21 +1516,38 @@ const visCell = (r, k) => cellAt(r, k + 1);
 
 let speedMode = 'normal';                     // 'normal' | 'turbo'
 let activeAnims = [];
-function rollReel(r, col, delayMs, durMs) {
+/* LJ fork: the main reel easing cubic-bezier(.45,0,.75,1) split at its steepest point (top speed), so a hold at
+   that speed can be put in the middle (anticipation). x / y = where the split is (time / distance fraction), slope =
+   top speed relative to the average, left / right = the two halves as easings. */
+const RUN_SPLIT = (() => {
+  const P1 = [0.45, 0], P2 = [0.75, 1];
+  const B = (a, b, c, d, t) => { const u = 1 - t; return u * u * u * a + 3 * u * u * t * b + 3 * u * t * t * c + t * t * t * d; };
+  const dB = (a, b, c, d, t) => { const u = 1 - t; return 3 * u * u * (b - a) + 6 * u * t * (c - b) + 3 * t * t * (d - c); };
+  let best = 0.5, slope = 0;
+  for (let i = 1; i < 400; i++) {
+    const t = i / 400, k = dB(0, P1[1], P2[1], 1, t) / dB(0, P1[0], P2[0], 1, t);
+    if (k > slope) { slope = k; best = t; }
+  }
+  const t = best, L = (a, b) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+  const p0 = [0, 0], p3 = [1, 1];
+  const q0 = L(p0, P1), q1 = L(P1, P2), q2 = L(P2, p3), r0 = L(q0, q1), r1 = L(q1, q2), m = L(r0, r1);
+  const nl = (p) => [p[0] / m[0], p[1] / m[1]], nr = (p) => [(p[0] - m[0]) / (1 - m[0]), (p[1] - m[1]) / (1 - m[1])];
+  const f = (a, b) => `cubic-bezier(${a[0].toFixed(4)},${a[1].toFixed(4)},${b[0].toFixed(4)},${b[1].toFixed(4)})`;
+  return { x: m[0], y: m[1], slope, left: f(nl(q0), nl(r0)), right: f(nr(r1), nr(q2)) };
+})();
+function rollReel(r, col, delayMs, durMs, holdMs) {
   return new Promise((resolve) => {
     const cur = state.grid[r] || [visualSym(), visualSym(), visualSym()];
-    // LJ fork: fixed-length start and stop, constant top speed in between. A reel that spins longer (anticipation)
-    // only cruises longer at full speed: it never slows down early. Segments (ms): kick up, speed up, cruise,
-    // slow down (overshoot), settle. Too short a spin for all of them (turbo) scales them down, no cruise.
-    const turbo = speedMode === 'turbo';
-    const R = turbo ? SKIN.reelRun.turbo : SKIN.reelRun.normal;
-    let [K, A, D, S] = R.ms;
-    const fixed = K + A + D + S;
-    if (durMs < fixed) { const f = durMs / fixed; K *= f; A *= f; D *= f; S *= f; }
-    const C = Math.max(0, durMs - K - A - D - S);
-    const v = R.speed, ov = R.over, kick = 22;
-    const dA = (v * A) / 1.67, dD = (v * D) / 3;      // distances whose end / start speed is v (see the easings)
-    const fillN = Math.max(3, Math.round((dA + v * C + dD - ov - kick) / P - 3));
+    // LJ fork: holdMs (anticipation) = extra time spent at the curve's top speed, so a waited-on reel spins just
+    // like a normal one, only for longer (no long slow stretch). The extra distance is whole cells, so the hold
+    // time is rounded to them.
+    const ov = speedMode === 'turbo' ? 16 : 30;
+    const fillN0 = Math.max(3, Math.round((durMs * 3.0) / P));
+    const t1 = 0.07 * durMs, tSeg = 0.79 * durMs;              // the main eased run: offsets .07 -> .86
+    const vTop = ((fillN0 + 3) * P + 22 + ov) / tSeg * RUN_SPLIT.slope;   // its top speed, px/ms
+    const holdN = holdMs > 0 ? Math.max(1, Math.round((vTop * holdMs) / P)) : 0;
+    const hold = holdN ? (holdN * P) / vTop : 0;
+    const fillN = fillN0 + holdN;
     const fill = Array.from({ length: fillN }, visualSym);
     // top -> bottom: pad, final(3), fillers, current(3), pad
     const list = [visualSym(), ...col, ...fill, ...cur, visualSym()];
@@ -1541,21 +1555,27 @@ function rollReel(r, col, delayMs, durMs) {
     const travel = (fillN + 3) * P;
     const st = stripEls[r];
     st.style.transform = `translateY(${-travel}px)`;
-    const y1 = -travel - kick, y4 = ov;
-    const y2 = y1 + dA, y3 = Math.max(y2, y4 - dD);
-    const at = (ms) => Math.min(1, ms / durMs);
-    const anim = st.animate([
-      { transform: `translateY(${-travel}px)`, easing: 'ease-out' },
-      { transform: `translateY(${y1}px)`, offset: at(K), easing: 'cubic-bezier(.4,0,.7,.5)' },      // speeds up to v
-      { transform: `translateY(${y2}px)`, offset: at(K + A), easing: 'linear' },                   // cruise at v
-      { transform: `translateY(${y3}px)`, offset: at(K + A + C), easing: 'cubic-bezier(.2,.6,.35,1)' }, // slows from v
-      { transform: `translateY(${y4}px)`, offset: at(K + A + C + D), easing: 'ease-in-out' },
-      { transform: 'translateY(0px)' },
-    ], { duration: durMs, delay: delayMs, fill: 'forwards' });
+    const total = durMs + hold;
+    const y1 = -travel - 22;
+    const frames = [{ transform: `translateY(${-travel}px)`, easing: 'ease-out' }];
+    if (!hold) {
+      frames.push({ transform: `translateY(${y1}px)`, offset: 0.07, easing: 'cubic-bezier(.45,0,.75,1)' });
+    } else {
+      // the same eased run, cut at its top speed, with a straight run at that speed in between
+      const S = RUN_SPLIT, run = travel + 22 + ov - holdN * P;   // the run without the hold
+      const yA = y1 + run * S.y, yB = yA + holdN * P;
+      frames.push({ transform: `translateY(${y1}px)`, offset: t1 / total, easing: S.left });
+      frames.push({ transform: `translateY(${yA}px)`, offset: (t1 + tSeg * S.x) / total, easing: 'linear' });
+      frames.push({ transform: `translateY(${yB}px)`, offset: (t1 + tSeg * S.x + hold) / total, easing: S.right });
+    }
+    frames.push({ transform: `translateY(${ov}px)`, offset: (0.86 * durMs + hold) / total, easing: 'cubic-bezier(.2,.6,.35,1)' });
+    frames.push({ transform: 'translateY(0px)' });
+    const anim = st.animate(frames, { duration: total, delay: delayMs, fill: 'forwards' });
+    durMs = total;
     activeAnims.push(anim);
     anim.pause(); stripReady(st).then(() => { if (anim.playState === 'paused') anim.play(); });
-    const blurOn = setTimeout(() => st.classList.add('rolling'), delayMs + K + A * 0.5);
-    const blurOff = setTimeout(() => st.classList.remove('rolling'), delayMs + K + A + C + D * 0.45);
+    const blurOn = setTimeout(() => st.classList.add('rolling'), delayMs + durMs * 0.08);
+    const blurOff = setTimeout(() => st.classList.remove('rolling'), delayMs + durMs * 0.8);
     anim.onfinish = () => {
       clearTimeout(blurOn); clearTimeout(blurOff); st.classList.remove('rolling');
       anim.cancel();
@@ -1607,11 +1627,18 @@ async function rollSet(grid, reels, opts) {
   const base = turbo ? 340 : 820, step = turbo ? 70 : 165;
   const plan = anticPlan(grid, reels, !(opts && opts.noScatterAntic));
   const extra = (a) => (a ? SKIN.antic[a] * (turbo ? SKIN.antic.turbo : 1) : 0);
-  let t = 0;
-  const durs = plan.map((a, i) => (t = i === 0 ? base + extra(a) : t + (a ? extra(a) : step)));
+  // every reel keeps its normal spin (the same curve as without anticipation); waiting adds a hold at full speed.
+  // A waited-on reel stops SKIN.antic ms after the reel before it instead of `step` ms, and every reel after it
+  // holds the same extra time, so nothing ever spins slowly while it waits.
+  let held = 0;
+  const durs = [], holds = [];
+  plan.forEach((a, i) => {
+    if (a) held += Math.max(0, extra(a) - (i ? step : 0));
+    durs.push(base + i * step); holds.push(held);
+  });
   activeAnims = [];
   reels.forEach((r) => xwClear(r));            // LJ fork: a reel that spins drops its Expanding Wild column
-  const ps = reels.map((r, i) => rollReel(r, grid[r], 0, durs[i]));
+  const ps = reels.map((r, i) => rollReel(r, grid[r], 0, durs[i], holds[i]));
   if (plan.some(Boolean)) dbg('anticipation: ' + reels.map((r, i) => (plan[i] ? `reel ${r} (${plan[i]})` : '')).filter(Boolean).join(', '));
   // the glow starts when the reel before it stops (at once for the first spinning reel) and ends when it lands
   reels.forEach((r, i) => {
