@@ -912,6 +912,9 @@ const SKIN = {
   // PLACEHOLDER: final character animation
   crocFlash: { ack: 520, feature: 1100, glow: '#ffd15a' },
   xwGrow: 400,
+  // the small Expanding Wild card in a cell: its frame in sym-XW.png (400-px canvas), px kept free around it in the
+  // cell, and how much wider than its own shape it may be drawn to fill a wide cell
+  xwCell: { frame: [56, 40, 340, 360], margin: 4, stretch: 0.06 },
   // a wild lands: a glow hit on the symbol. ms = whole flare (turbo x0.6), glowPx = glow radius, colours for the
   // coin wild / the croc wild
   // lead = how early it lands, as a fraction of the reel's spin before it reaches its stop overshoot
@@ -1439,14 +1442,33 @@ function makeCell(s, reel, bottom) {
   return d;
 }
 // (re)point a cell at symbol s: reuses its img element (only its source changes), so a spin creates no nodes
-function setCell(d, s, reel, bottom) {
+/* LJ fork: the small (unexpanded) Expanding Wild card fills its reel cell: its frame (SKIN.xwCell.frame, in the
+   400-px sprite) is scaled to the cell (layout cells x / y) less a margin, centred on the cell, with at most
+   SKIN.xwCell.stretch extra width so it also fills a wider cell. Cached per reel and row. */
+const XW_ID = SP.XW || 'XW';
+const xwFitCache = {};
+function xwCellFit(r, row) {
+  const key = r + ',' + row;
+  if (xwFitCache[key]) return xwFitCache[key];
+  const C = SKIN.xwCell, [f0, g0, f1, g1] = C.frame, u = 256 / 400;
+  const fw = (f1 - f0) * u, fh = (g1 - g0) * u, fcx = ((f0 + f1) / 2 - 200) * u, fcy = ((g0 + g1) / 2 - 200) * u;
+  const [x0, x1] = CELLX[r], [y0, y1] = CELLY[row];
+  const kx = (x1 - x0 - 2 * C.margin) / fw, ky = (y1 - y0 - 2 * C.margin) / fh;
+  const k = Math.min(kx, ky), sx = Math.min(kx / k, 1 + C.stretch);
+  const dx = (x0 + x1) / 2 - CX[r] - fcx * k * sx, dy = (y0 + y1) / 2 - CY[row] - fcy * k;
+  return (xwFitCache[key] = { k, sx, dx: Math.round(dx * 10) / 10, dy: Math.round(dy * 10) / 10 });
+}
+function setCell(d, s, reel, bottom, row) {
   const b = reel === 2 && !!bottom;
-  if (d.dataset.s === s && d.dataset.r === String(reel) && d.dataset.b === String(b)) return;
-  d.dataset.s = s; d.dataset.r = reel; d.dataset.b = b;
-  const k = symScale(s, reel, b);
+  const rw = row == null ? -1 : row;
+  if (d.dataset.s === s && d.dataset.r === String(reel) && d.dataset.b === String(b) && d.dataset.k === String(rw)) return;
+  d.dataset.s = s; d.dataset.r = reel; d.dataset.b = b; d.dataset.k = rw;
+  const fit = s === XW_ID && rw >= 0 ? xwCellFit(reel, rw) : null;
+  const k = fit ? fit.k : symScale(s, reel, b);
   d.style.setProperty('--s', k);
   d.style.transform = `scale(${k})`;
-  d.style.translate = b ? `0 ${-r2Lift(s, k)}px` : '';            // CSS translate composes with the pop/crown animations
+  d.style.translate = fit ? `${fit.dx}px ${fit.dy}px` : b ? `0 ${-r2Lift(s, k)}px` : '';   // composes with pop/crown animations
+  d.style.scale = fit ? `${fit.sx} 1` : '';
   const cur = d.firstChild;
   if (spriteOK[s]) {
     if (cur && cur.tagName === 'IMG') { setSrc(cur, spriteURL[s]); cur.alt = s; return; }
@@ -1493,7 +1515,7 @@ for (let r = 0; r < 5; r++) {
 const T0 = (r) => CY[0] - WIN[r][1] - P;
 const cellAt = (r, i) => stripEls[r].children[i];
 // bottoms = strip indices that hold a BOTTOM-row symbol at rest (reel 2 draws those lifted; see R2_BOTTOM_Y)
-function layStrip(r, list, bottoms) {
+function layStrip(r, list, bottoms, rowOf) {
   const st = stripEls[r];
   const left = CX[r] - WIN[r][0] - 128;
   // pooled: existing cell nodes are reused, new ones only when the list is longer, surplus hidden
@@ -1504,7 +1526,7 @@ function layStrip(r, list, bottoms) {
     c.style.display = '';
     c.classList.remove('dim', 'pop', 'crownhit', 'stripped');
     c.style.animationDelay = '';
-    setCell(c, list[i], r, !!(bottoms && bottoms.includes(i)));
+    setCell(c, list[i], r, !!(bottoms && bottoms.includes(i)), rowOf ? rowOf(i) : -1);
     c.style.left = left + 'px';
     c.style.top = (T0(r) + i * P - 128) + 'px';
   }
@@ -1512,7 +1534,7 @@ function layStrip(r, list, bottoms) {
 const state = { grid: [], pads: [] };
 function setReel(r, col) {                    // static: [pad, row0, row1, row2, pad]
   const pads = [visualSym(), visualSym()];
-  layStrip(r, [pads[0], col[0], col[1], col[2], pads[1]], [3]);
+  layStrip(r, [pads[0], col[0], col[1], col[2], pads[1]], [3], (i) => (i >= 1 && i <= 3 ? i - 1 : -1));
   stripEls[r].style.transform = 'translateY(0px)';
   state.grid[r] = col.slice();
 }
@@ -1555,7 +1577,8 @@ function rollReel(r, col, delayMs, durMs, holdMs) {
     const fill = Array.from({ length: fillN }, visualSym);
     // top -> bottom: pad, final(3), fillers, current(3), pad
     const list = [visualSym(), ...col, ...fill, ...cur, visualSym()];
-    layStrip(r, list, [3, fillN + 6]);                // the landing bottom cell and the departing one
+    layStrip(r, list, [3, fillN + 6],                 // the landing bottom cell and the departing one
+      (i) => (i >= 1 && i <= 3 ? i - 1 : i >= fillN + 4 && i <= fillN + 6 ? i - fillN - 4 : -1));   // row of each cell
     // LJ fork: an Expanding Wild column on this reel rides the strip (on top of the departing cells) and rolls off
     // with them instead of vanishing; the reel window clips it like any symbol. Removed when the reel stops.
     const rideCol = xwEls[r];
