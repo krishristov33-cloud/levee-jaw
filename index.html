@@ -109,6 +109,15 @@
   .royalfall{position:absolute;width:256px;height:256px;pointer-events:none;will-change:transform}
   .royalfall img{width:100%;height:100%;display:block}
   .popring{position:absolute;border-radius:50%;pointer-events:none}
+  /* LJ fork: anticipation glow around a reel that is spinning longer (colours: SKIN css .antic.scatter / .wild) */
+  .antic{position:absolute;border-radius:18px;pointer-events:none;overflow:hidden;border:7px solid var(--ac);
+    animation:anticPulse .42s ease-in-out infinite alternate}
+  .antic::after{content:'';position:absolute;left:0;right:0;height:40%;top:-40%;opacity:.6;
+    background:linear-gradient(180deg,transparent,var(--ac2),transparent);animation:anticSweep .62s linear infinite}
+  @keyframes anticPulse{from{box-shadow:0 0 24px 6px var(--ac),inset 0 0 26px 6px var(--ac);opacity:.85}
+    to{box-shadow:0 0 60px 22px var(--ac),inset 0 0 56px 16px var(--ac);opacity:1}}
+  @keyframes anticSweep{to{top:100%}}
+  @media (prefers-reduced-motion: reduce){.antic,.antic::after{animation:none}}
   .spark{position:absolute;width:12px;height:12px;border-radius:50%;pointer-events:none}
   /* LJ fork: debug overlay (G, or on whenever the QA badge is) */
   #dbg{position:fixed;left:12px;top:12px;width:min(520px,calc(100vw - 24px));max-height:38vh;overflow:hidden;z-index:101;display:none;
@@ -350,6 +359,8 @@
     background:linear-gradient(180deg,#ffd15a 0%,#b0202e 22%,#5e0c14 50%,#b0202e 78%,#ffd15a 100%)}
   .popring{border:6px solid #ffd15a;box-shadow:0 0 22px 6px rgba(255,190,70,.8),inset 0 0 18px rgba(255,220,120,.7)}
   .spark{background:#ffe9a0;box-shadow:0 0 10px 3px #ffb43a}
+  .antic.scatter{--ac:#ffc83a;--ac2:rgba(255,236,160,.9)}         /* waiting for the 3rd Brass Maldo scatter */
+  .antic.wild{--ac:#ff6a24;--ac2:rgba(255,214,110,.95)}             /* waiting for another croc Expanding Wild */
   html.portrait #banner.lite .t1{font-size:60px;padding:0 24px;text-align:center}
   html.portrait #banner.lite .t2{font-size:38px;padding:0 24px;text-align:center}
   #banner.lite{background:radial-gradient(ellipse at 50% 50%,rgba(60,10,16,.5),rgba(12,6,4,.2) 60%,rgba(0,0,0,0))}
@@ -901,6 +912,9 @@ const SKIN = {
   // PLACEHOLDER: final character animation
   crocFlash: { ack: 520, feature: 1100, glow: '#ffd15a' },
   xwGrow: 400,
+  // anticipation: extra spin (ms) for each reel that is waited on, after 2 scatters / after a croc Expanding Wild;
+  // turbo = factor in turbo mode
+  antic: { scatter: 1400, wild: 1000, turbo: 0.5 },
   // royals leaving the reels at feature start: ms = pop + fall, lift px, pop = scale at the pop, popAt / hangAt =
   // keyframe offsets (pop peak, start of the fall), stagger ms between royals, sparks per pop
   royalFall: { ms: 1300, lift: 36, pop: 1.3, popAt: 0.13, hangAt: 0.27, stagger: 80, sparks: 7 },
@@ -1540,12 +1554,56 @@ const stripReady = (st) => Promise.race([new Promise((r) => setTimeout(r, 600)),
   Promise.all([...st.querySelectorAll('img')].map((im) => (im.decode ? im.decode().catch(() => {}) : null)))]);
 function quickStop() { activeAnims.forEach((a) => { try { a.finish(); } catch (e) {} }); activeAnims = []; }
 
-async function rollSet(grid, reels) {
+/* LJ fork: anticipation. Reels stop left to right; a reel is 'waited on' when the reels already stopped (plus any
+   that did not spin this step) show exactly 2 scatters ('scatter': the 3rd would start the free spins; not in free
+   spins, there is no retrigger) or at least one croc Expanding Wild ('wild': teasing a 2nd / 3rd). A waited-on reel
+   spins SKIN.antic[kind] ms longer than the one before it and glows from the moment that one stops until it lands.
+   Decided only from reels that have already stopped, as a player sees it. */
+function anticPlan(grid, reels, scatters) {
+  const stopped = [0, 1, 2, 3, 4].filter((r) => !reels.includes(r));
+  return reels.map((r) => {
+    const sc = scatters ? stopped.reduce((n, q) => n + grid[q].filter((s) => s === SP.SCATTER).length, 0) : 0;
+    const xw = stopped.some((q) => grid[q].includes(XWID));
+    stopped.push(r);
+    return sc === 2 ? 'scatter' : xw ? 'wild' : null;
+  });
+}
+const anticEls = {};
+function anticOn(r, kind) {
+  anticOff(r);
+  const [x, y, w, h] = WIN[r];
+  const el = document.createElement('div');
+  el.className = 'antic ' + kind;
+  Object.assign(el.style, { left: x - 8 + 'px', top: y - 8 + 'px', width: w + 16 + 'px', height: h + 16 + 'px' });
+  fx.appendChild(el);
+  anticEls[r] = { el, stopSnd: sfx.antic(kind) };
+}
+function anticOff(r) {
+  const a = anticEls[r]; if (!a) return;
+  a.stopSnd(); delete anticEls[r];
+  if (CALM_FX()) { a.el.remove(); return; }
+  a.el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 220, fill: 'forwards' }).finished.catch(() => {}).then(() => a.el.remove());
+}
+async function rollSet(grid, reels, opts) {
   const turbo = speedMode === 'turbo';
   const base = turbo ? 340 : 820, step = turbo ? 70 : 165;
+  const plan = anticPlan(grid, reels, !(opts && opts.noScatterAntic));
+  const extra = (a) => (a ? SKIN.antic[a] * (turbo ? SKIN.antic.turbo : 1) : 0);
+  let t = 0;
+  const durs = plan.map((a, i) => (t = i === 0 ? base + extra(a) : t + (a ? extra(a) : step)));
   activeAnims = [];
   reels.forEach((r) => xwClear(r));            // LJ fork: a reel that spins drops its Expanding Wild column
-  await Promise.all(reels.map((r, i) => rollReel(r, grid[r], 0, base + i * step)));
+  const ps = reels.map((r, i) => rollReel(r, grid[r], 0, durs[i]));
+  if (plan.some(Boolean)) dbg('anticipation: ' + reels.map((r, i) => (plan[i] ? `reel ${r} (${plan[i]})` : '')).filter(Boolean).join(', '));
+  // the glow starts when the reel before it stops (at once for the first spinning reel) and ends when it lands
+  reels.forEach((r, i) => {
+    if (!plan[i]) return;
+    let landed = false;
+    ps[i].then(() => { landed = true; anticOff(r); });
+    (i ? ps[i - 1] : Promise.resolve()).then(() => { if (!landed) anticOn(r, plan[i]); });
+  });
+  await Promise.all(ps);
+  reels.forEach(anticOff);
   activeAnims = [];
 }
 
@@ -1883,6 +1941,13 @@ const sfx = (() => {
     toggleSound() { soundOn = !soundOn; return soundOn; },
     toggleMusic() { musicOn = !musicOn; if (musicOn) { ac(); musicLoop(); } else musicStop(); return musicOn; },
     stop(r) { if (soundOn) blip(180 + r * 25, 0.09, 'square', 0.035); },
+    // LJ fork: anticipation, a rising pulse while a reel is waited on; returns its stop function
+    antic(kind) {
+      let n = 0;
+      const base = kind === 'scatter' ? 392 : 330;
+      const id = setInterval(() => { if (soundOn) blip(base * Math.pow(2, Math.min(n, 14) / 12), 0.1, 'triangle', 0.045); n++; }, 110);
+      return () => clearInterval(id);
+    },
     start() { if (soundOn) blip(420, 0.12, 'sawtooth', 0.025); },
     win(big) { if (!soundOn) return; [523, 659, 784, big ? 1046 : 0].forEach((f, i) => f && blip(f, 0.22, 'triangle', 0.06, i * 0.09)); },
     copy() { if (!soundOn) return; for (let i = 0; i < 6; i++) blip(300 + i * 90, 0.08, 'sine', 0.05, i * 0.05); },
@@ -2111,7 +2176,7 @@ async function playOne(manual) {
         const rows = (st.xwLand || []).filter(([rr]) => rr === r).map(([, k]) => k);
         land[r] = [0, 1, 2].map((k) => (rows.includes(k) ? XWID : cosmeticSym()));
       });
-      await rollSet(land, spun);
+      await rollSet(land, spun, { noScatterAntic: st.kind === 'free' });   // free spins: no retrigger, no scatter tease
       for (let r = 0; r < 5; r++) if (!spun.includes(r)) state.grid[r] = st.grid[r].slice();
       if (expanded.length) {
         sfx.xw();
