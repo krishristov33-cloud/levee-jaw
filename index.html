@@ -103,12 +103,13 @@
   .xwcol img{display:block;width:100%;height:100%}
   .xwcol.dim{filter:brightness(.42) saturate(.7)}
   /* LJ fork: royals stripped at feature start (Maldo clears the royals) */
-  .cell.stripped{animation:stripped .75s ease-in forwards}
-  @keyframes stripped{0%{transform:scale(var(--s,1));opacity:1}
-    35%{transform:scale(calc(var(--s,1)*1.12)) rotate(-6deg);opacity:1}
-    100%{transform:translateY(-220px) scale(calc(var(--s,1)*.4)) rotate(24deg);opacity:0}}
-  @media (prefers-reduced-motion: reduce){.cell.stripped{animation:none;opacity:0}}
-  .strike{position:absolute;height:12px;border-radius:6px;pointer-events:none;transform-origin:0 50%}
+  /* the cell itself just empties; a copy of it (.royalfall, in #fx above the reels) pops out of the reel and falls off
+     the screen */
+  .cell.stripped{opacity:0;transition:none}
+  .royalfall{position:absolute;width:256px;height:256px;pointer-events:none;will-change:transform}
+  .royalfall img{width:100%;height:100%;display:block}
+  .popring{position:absolute;border-radius:50%;pointer-events:none}
+  .spark{position:absolute;width:12px;height:12px;border-radius:50%;pointer-events:none}
   /* LJ fork: debug overlay (G, or on whenever the QA badge is) */
   #dbg{position:fixed;left:12px;top:12px;width:min(520px,calc(100vw - 24px));max-height:38vh;overflow:hidden;z-index:101;display:none;
     border-radius:10px;padding:10px 12px;font:12px/1.45 ui-monospace,Consolas,monospace;pointer-events:none;white-space:pre-wrap}
@@ -347,7 +348,8 @@
   /* LJ fork: the Expanding Wild column is the artist's art (xw-expanded.png); .plain = fallback when it is missing */
   .xwcol.plain{border-radius:18px;border:5px solid #ffd15a;
     background:linear-gradient(180deg,#ffd15a 0%,#b0202e 22%,#5e0c14 50%,#b0202e 78%,#ffd15a 100%)}
-  .strike{background:linear-gradient(90deg,#ffd15a,#ff3b3b);box-shadow:0 0 14px rgba(255,80,60,.9)}
+  .popring{border:6px solid #ffd15a;box-shadow:0 0 22px 6px rgba(255,190,70,.8),inset 0 0 18px rgba(255,220,120,.7)}
+  .spark{background:#ffe9a0;box-shadow:0 0 10px 3px #ffb43a}
   html.portrait #banner.lite .t1{font-size:60px;padding:0 24px;text-align:center}
   html.portrait #banner.lite .t2{font-size:38px;padding:0 24px;text-align:center}
   #banner.lite{background:radial-gradient(ellipse at 50% 50%,rgba(60,10,16,.5),rgba(12,6,4,.2) 60%,rgba(0,0,0,0))}
@@ -899,6 +901,9 @@ const SKIN = {
   // PLACEHOLDER: final character animation
   crocFlash: { ack: 520, feature: 1100, glow: '#ffd15a' },
   xwGrow: 400,
+  // royals leaving the reels at feature start: ms = pop + fall, lift px, pop = scale at the pop, popAt / hangAt =
+  // keyframe offsets (pop peak, start of the fall), stagger ms between royals, sparks per pop
+  royalFall: { ms: 1300, lift: 36, pop: 1.3, popAt: 0.13, hangAt: 0.27, stagger: 80, sparks: 7 },
   // xw-expanded.png: image size and its frame (the gold-capped column, without the snout that pokes out to the right)
   // in image px [x0, y0, x1, y1]; the frame is fitted onto the reel window, the snout overhangs the next reel
   xwCol: { w: 354, h: 849, frame: [17, 3, 290, 839] },
@@ -1629,8 +1634,52 @@ function crocFlash(kind) {
     : [rest, Object.assign({ offset: 0.35 }, peak), rest];
   return cv.animate(frames, { duration: ms, easing: 'ease-in-out' }).finished.catch(() => {});
 }
-// feature start: croc flash + banner + the royals on the reels are struck and fly out, the emptied cells refill
-// with themed symbols (cosmetic), then the free spins begin
+// one royal leaves the reel: a copy of its cell pops out (lift, scale-up, gold flash, ring + sparks), then tumbles
+// sideways and falls off the bottom of the screen under 'gravity'. The real cell is emptied at the pop.
+function royalFall(r, k, delay) {
+  const c = visCell(r, k);
+  const [x, y, w, h] = cellRect(r, k);
+  const cx = x + w / 2, cy = y + h / 2;
+  const sc = c ? parseFloat(c.style.getPropertyValue('--s')) || 1 : 1;
+  const side = r < 2 ? -1 : r > 2 ? 1 : (k % 2 ? 1 : -1);          // left board falls left, right board right
+  const dx = side * (60 + Math.random() * 140), rot = side * (120 + Math.random() * 200);
+  const fall = 1900;                                               // board px: below the stage in both views
+  const RF = SKIN.royalFall;
+  setTimeout(() => {
+    if (c) c.classList.add('stripped');
+    // the copy: same sprite, same size, drawn above the reel window so it can leave it
+    const f = c ? c.cloneNode(true) : document.createElement('div');
+    f.className = 'royalfall';
+    Object.assign(f.style, { left: cx - 128 + 'px', top: cy - 128 + 'px', translate: '', opacity: '' });
+    fx.appendChild(f);
+    const T = (tx, ty, a, m) => `translate(${tx}px,${ty}px) rotate(${a}deg) scale(${sc * m})`;
+    f.animate([
+      { transform: T(0, 0, 0, 1), filter: 'brightness(1) drop-shadow(0 0 0 rgba(0,0,0,0))' },
+      { transform: T(0, -RF.lift, side * -5, RF.pop), filter: 'brightness(1.9) drop-shadow(0 0 26px #ffd15a)', offset: RF.popAt, easing: 'ease-out' },
+      { transform: T(dx * 0.12, -RF.lift * 1.25, rot * 0.06, RF.pop * 0.94), filter: 'brightness(1.15) drop-shadow(0 22px 14px rgba(0,0,0,.6))', offset: RF.hangAt,
+        easing: 'cubic-bezier(.42,0,.85,.55)' },                  // from here on: falling, accelerating
+      { transform: T(dx, fall, rot, RF.pop * 0.9), filter: 'brightness(.9) drop-shadow(0 30px 18px rgba(0,0,0,.6))' },
+    ], { duration: RF.ms, fill: 'forwards' }).finished.catch(() => {}).then(() => f.remove());
+    // pop: a gold ring and a few sparks where the symbol leaves the reel
+    const ring = document.createElement('div'); ring.className = 'popring';
+    const R0 = Math.min(w, h) * 0.42;
+    Object.assign(ring.style, { left: cx - R0 + 'px', top: cy - R0 + 'px', width: 2 * R0 + 'px', height: 2 * R0 + 'px' });
+    fx.appendChild(ring);
+    ring.animate([{ transform: 'scale(.5)', opacity: 1 }, { transform: 'scale(1.5)', opacity: 0 }], { duration: 380, easing: 'ease-out', fill: 'forwards' })
+      .finished.catch(() => {}).then(() => ring.remove());
+    for (let i = 0; i < RF.sparks; i++) {
+      const a = (i / RF.sparks) * Math.PI * 2 + Math.random() * 0.5, d = R0 * (1.1 + Math.random() * 0.6);
+      const sp = document.createElement('div'); sp.className = 'spark';
+      Object.assign(sp.style, { left: cx - 6 + 'px', top: cy - 6 + 'px' });
+      fx.appendChild(sp);
+      sp.animate([{ transform: 'translate(0,0) scale(1)', opacity: 1 },
+        { transform: `translate(${Math.cos(a) * d}px,${Math.sin(a) * d + 40}px) scale(.3)`, opacity: 0 }],
+        { duration: 420 + Math.random() * 160, easing: 'cubic-bezier(.2,.7,.4,1)', fill: 'forwards' }).finished.catch(() => {}).then(() => sp.remove());
+    }
+  }, delay);
+}
+// feature start: croc flash + banner + the royals on the reels pop out of their reels and fall off the screen, the
+// emptied cells refill with themed symbols (cosmetic), then the free spins begin
 async function featureIntro() {
   const T = SKIN.terms;
   prompt(T.royalsCleared, 'gold');
@@ -1642,20 +1691,14 @@ async function featureIntro() {
   const hits = [];
   for (let r = 0; r < 5; r++) for (let k = 0; k < 3; k++) if (ROYAL.has(state.grid[r] && state.grid[r][k])) hits.push([r, k]);
   if (hits.length) sfx.royals();
-  const calm = CALM_FX();                      // reduced motion: struck cells just vanish (CSS), no strike lines
+  const calm = CALM_FX();                      // reduced motion: the royals just vanish, nothing pops or falls
+  const stagger = SKIN.royalFall.stagger;
   hits.forEach(([r, k], i) => {
-    const c = visCell(r, k);
-    if (c) { c.style.animationDelay = i * 70 + 'ms'; c.classList.add('stripped'); }
-    if (calm) return;
-    const [x, y, w, h] = cellRect(r, k);
-    const s = document.createElement('div'); s.className = 'strike';
-    Object.assign(s.style, { left: x + 18 + 'px', top: y + h / 2 - 6 + 'px', width: w - 36 + 'px', rotate: '-24deg' });
-    fx.appendChild(s);
-    s.animate([{ transform: 'scaleX(0)', opacity: 1 }, { transform: 'scaleX(1)', opacity: 1, offset: 0.4 }, { transform: 'scaleX(1)', opacity: 0 }],
-      { duration: 700, delay: i * 70, fill: 'forwards', easing: 'ease-out' });
+    if (calm) { const c = visCell(r, k); if (c) c.classList.add('stripped'); return; }
+    royalFall(r, k, i * stagger);              // PLACEHOLDER: final character animation (Maldo knocks them off)
   });
-  await sleep(850 + hits.length * 70);
-  fx.textContent = '';
+  // refill once the last royal has popped out and is on its way down (the falling copies finish on their own)
+  await sleep(calm ? 400 : SKIN.royalFall.ms * 0.62 + hits.length * stagger);
   fillSet = 'free';
   const touched = [...new Set(hits.map(([r]) => r))];
   touched.forEach((r) => {
@@ -2522,7 +2565,8 @@ function prewarm() {
   add('burst', 'left:400px;top:400px');
   add('sweep', 'left:935px;width:120px');
   add('xwcol', 'left:600px;top:200px;width:240px;height:700px');   // LJ fork: the Expanding Wild column
-  add('strike', 'left:700px;top:500px;width:200px');
+  add('popring', 'left:700px;top:500px;width:200px;height:200px');
+  add('spark', 'left:760px;top:560px');
   add('linetag L', 'left:600px;top:600px').textContent = '0.00';
   add('linetag R', 'left:1300px;top:600px').textContent = '0.00';
   drawLine({ board: 'L', cells: [[0, 0], [1, 1], [2, 2]] });
