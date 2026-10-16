@@ -109,6 +109,7 @@
   .royalfall{position:absolute;width:256px;height:256px;pointer-events:none;will-change:transform}
   .royalfall img{width:100%;height:100%;display:block}
   .popring{position:absolute;border-radius:50%;pointer-events:none}
+  .wildring{position:absolute;border-radius:50%;pointer-events:none}
   /* LJ fork: anticipation glow around a reel that is spinning longer (colours: SKIN css .antic.scatter / .wild) */
   .antic{position:absolute;border-radius:18px;pointer-events:none;overflow:hidden;border:7px solid var(--ac);
     box-shadow:0 0 50px 16px var(--ac),inset 0 0 50px 14px var(--ac);will-change:opacity;
@@ -359,6 +360,8 @@
     background:linear-gradient(180deg,#ffd15a 0%,#b0202e 22%,#5e0c14 50%,#b0202e 78%,#ffd15a 100%)}
   .popring{border:6px solid #ffd15a;box-shadow:0 0 22px 6px rgba(255,190,70,.8),inset 0 0 18px rgba(255,220,120,.7)}
   .spark{background:#ffe9a0;box-shadow:0 0 10px 3px #ffb43a}
+  .wildring.w{background:radial-gradient(circle,rgba(255,230,140,.85) 0%,rgba(255,200,70,.45) 45%,rgba(255,190,60,0) 70%)}
+  .wildring.xw{background:radial-gradient(circle,rgba(255,170,90,.85) 0%,rgba(255,90,40,.45) 45%,rgba(200,40,30,0) 70%)}
   .antic.scatter{--ac:#ffc83a;--ac2:rgba(255,236,160,.9)}         /* waiting for the 3rd Brass Maldo scatter */
   .antic.wild{--ac:#ff6a24;--ac2:rgba(255,214,110,.95)}             /* waiting for another croc Expanding Wild */
   html.portrait #banner.lite .t1{font-size:60px;padding:0 24px;text-align:center}
@@ -912,6 +915,8 @@ const SKIN = {
   // PLACEHOLDER: final character animation
   crocFlash: { ack: 520, feature: 1100, glow: '#ffd15a' },
   xwGrow: 400,
+  // a wild lands: pop = peak scale, ms = whole pop (turbo x0.6), glow colours for the coin wild / the croc wild
+  wildLand: { pop: 1.3, ms: 560, glowW: '#ffd15a', glowXW: '#ff6a24' },
   // anticipation: extra spin (ms) for each reel that is waited on, after 2 scatters / after a croc Expanding Wild;
   // turbo = factor in turbo mode
   antic: { scatter: 1400, wild: 1000, turbo: 0.5 },
@@ -1582,6 +1587,7 @@ function rollReel(r, col, delayMs, durMs, holdMs) {
       setReel(r, col);
       sfx.stop(r);
       if (col.includes(SP.SCATTER)) shake('scatterLand');
+      wildLand(r, col);                        // LJ fork: a landed wild / Expanding Wild pops and glows
       resolve();
     };
   });
@@ -1736,6 +1742,40 @@ function crocFlash(kind) {
     ? [rest, Object.assign({ offset: 0.2 }, peak), Object.assign({ offset: 0.4 }, rest), Object.assign({ offset: 0.6 }, peak), rest]
     : [rest, Object.assign({ offset: 0.35 }, peak), rest];
   return cv.animate(frames, { duration: ms, easing: 'ease-in-out' }).finished.catch(() => {});
+}
+// LJ fork: a wild lands. For each Levee Toll Coin wild (W) or croc Expanding Wild (XW) on the reel that just
+// stopped, a copy of the cell above the reel window (so the pop is not clipped) punches up and glows, with a ring
+// burst behind it, then settles back onto the real cell and is removed. Look: SKIN.wildLand + SKIN css .wildring.
+function wildLand(r, col) {
+  const ks = [0, 1, 2].filter((k) => col[k] === SP.WILD || col[k] === XWID);
+  if (!ks.length) return;
+  sfx.wildLand(col.includes(XWID));
+  if (CALM_FX()) return;
+  const WL = SKIN.wildLand, ms = speedMode === 'turbo' ? WL.ms * 0.6 : WL.ms;
+  ks.forEach((k) => {
+    const c = visCell(r, k); if (!c) return;
+    const kind = col[k] === XWID ? 'xw' : 'w';
+    const [x, y, w, h] = cellRect(r, k);
+    const cx = x + w / 2, cy = y + h / 2;
+    const sc = parseFloat(c.style.getPropertyValue('--s')) || 1;
+    const ring = document.createElement('div'); ring.className = 'wildring ' + kind;
+    const R0 = Math.min(w, h) * 0.5;
+    Object.assign(ring.style, { left: cx - R0 + 'px', top: cy - R0 + 'px', width: 2 * R0 + 'px', height: 2 * R0 + 'px' });
+    fx.appendChild(ring);
+    ring.animate([{ transform: 'scale(.4)', opacity: 1 }, { transform: 'scale(1.35)', opacity: 0 }], { duration: ms * 0.9, easing: 'ease-out', fill: 'forwards' })
+      .finished.catch(() => {}).then(() => ring.remove());
+    const f = c.cloneNode(true);
+    f.className = 'royalfall';                  // same box as the falling royals: a free-standing copy of a cell
+    Object.assign(f.style, { left: cx - 128 + 'px', top: cy - 128 + 'px', translate: '', opacity: '' });
+    fx.appendChild(f);
+    const glow = kind === 'xw' ? WL.glowXW : WL.glowW;
+    f.animate([
+      { transform: `scale(${sc})`, filter: `brightness(1) drop-shadow(0 0 0 ${glow})` },
+      { transform: `scale(${sc * WL.pop})`, filter: `brightness(1.6) drop-shadow(0 0 30px ${glow})`, offset: 0.28, easing: 'ease-in-out' },
+      { transform: `scale(${sc * 0.97})`, filter: `brightness(1.25) drop-shadow(0 0 18px ${glow})`, offset: 0.6 },
+      { transform: `scale(${sc})`, filter: `brightness(1) drop-shadow(0 0 0 ${glow})` },
+    ], { duration: ms, easing: 'ease-out', fill: 'forwards' }).finished.catch(() => {}).then(() => f.remove());
+  });
 }
 // one royal leaves the reel: a copy of its cell pops out (lift, scale-up, gold flash, ring + sparks), then tumbles
 // sideways and falls off the bottom of the screen under 'gravity'. The real cell is emptied at the pop.
@@ -1998,6 +2038,8 @@ const sfx = (() => {
     copy() { if (!soundOn) return; for (let i = 0; i < 6; i++) blip(300 + i * 90, 0.08, 'sine', 0.05, i * 0.05); },
     crown() { if (!soundOn) return; [784, 988, 1175, 1568].forEach((f, i) => blip(f, 0.35, 'triangle', 0.07, i * 0.12)); },
     click() { if (soundOn) blip(900, 0.04, 'square', 0.02); },
+    // LJ fork: a wild lands (a bright double hit; lower and longer for the croc)
+    wildLand(croc) { if (!soundOn) return; (croc ? [262, 392, 523] : [523, 784]).forEach((f, i) => blip(f, 0.14, 'triangle', 0.06, i * 0.045)); },
     xw() { if (!soundOn) return; [392, 523, 659, 784].forEach((f, i) => blip(f, 0.2, 'sawtooth', 0.035, i * 0.05)); },
     royals() { if (!soundOn) return; [880, 740, 587, 440].forEach((f, i) => blip(f, 0.16, 'square', 0.03, i * 0.08)); },
     unlock() { unlocked = true; ac(); musicLoop(); },
@@ -2676,6 +2718,8 @@ function prewarm() {
   add('sweep', 'left:935px;width:120px');
   add('xwcol', 'left:600px;top:200px;width:240px;height:700px');   // LJ fork: the Expanding Wild column
   add('popring', 'left:700px;top:500px;width:200px;height:200px');
+  add('wildring w', 'left:700px;top:500px;width:200px;height:200px');
+  add('wildring xw', 'left:700px;top:500px;width:200px;height:200px');
   add('spark', 'left:760px;top:560px');
   add('linetag L', 'left:600px;top:600px').textContent = '0.00';
   add('linetag R', 'left:1300px;top:600px').textContent = '0.00';
