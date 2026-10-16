@@ -899,7 +899,9 @@ const SKIN = {
   // PLACEHOLDER: final character animation
   crocFlash: { ack: 520, feature: 1100, glow: '#ffd15a' },
   xwGrow: 400,
-  xwColAspect: 354 / 849,                        // xw-expanded.png width / height
+  // xw-expanded.png: image size and its frame (the gold-capped column, without the snout that pokes out to the right)
+  // in image px [x0, y0, x1, y1]; the frame is fitted onto the reel window, the snout overhangs the next reel
+  xwCol: { w: 354, h: 849, frame: [17, 3, 290, 839] },
   // reel 2 bottom-cell lift (SALT PIMP's collar clasp): this skin has no chrome over reel 2's bottom cell -> off
   r2Bottom: { k: 1, y: Infinity },
   r2Margin: 14,                                  // px kept clear between a reel-2 symbol and the red column's edge
@@ -1563,14 +1565,19 @@ function xwClear(r) { if (xwEls[r]) { xwEls[r].remove(); xwEls[r] = null; } }
 // the reel (its aspect is wider than a reel, so it overhangs the reel edges a little). No art -> a plain gold /
 // oxblood column (look: SKIN css .xwcol.plain).
 const XW_COL_URL = asset('xw-expanded.png');
-const XW_COL_ASPECT = SKIN.xwColAspect;
 function xwColumn(r) {
   xwClear(r);
   const [x, y, w, h] = WIN[r];
   const el = document.createElement('div');
   el.className = 'xwcol'; el.dataset.reel = r;
-  const cw = XW_COL_URL ? Math.round(h * XW_COL_ASPECT) : w - 8;
-  Object.assign(el.style, { left: Math.round(x + w / 2 - cw / 2) + 'px', top: y + 'px', width: cw + 'px', height: h + 'px' });
+  let box = [x + 4, y + 4, w - 8, h - 8];                  // left, top, width, height (stage px)
+  if (XW_COL_URL) {                                        // scale the art so its frame lands exactly on the reel window
+    const C = SKIN.xwCol, [f0, g0, f1, g1] = C.frame;
+    const sx = w / (f1 - f0), sy = h / (g1 - g0);
+    box = [x - f0 * sx, y - g0 * sy, C.w * sx, C.h * sy];
+  }
+  el.box = box;
+  Object.assign(el.style, { left: box[0] + 'px', top: box[1] + 'px', width: box[2] + 'px', height: box[3] + 'px' });
   if (XW_COL_URL) {
     const im = document.createElement('img');
     setSrc(im, XW_COL_URL); im.alt = XWID; im.draggable = false; im.decoding = 'sync';
@@ -1583,7 +1590,7 @@ function xwColumn(r) {
 // the drawn XW cell(s) grow to cover the whole reel, with a gold / oxblood flash; then the reel's cells read XW
 async function xwExpand(r, rows) {
   const el = xwColumn(r);
-  const [, y, , h] = WIN[r];
+  const [, y, , h] = el.box;                               // the column's own box (the art overhangs the window)
   const CYs = r === 2 ? CELLY2 : CELLY;
   const lo = Math.min(...rows), hi = Math.max(...rows);
   const t = Math.max(0, ((CYs[lo][0] - y) / h) * 100), b = Math.max(0, ((y + h - CYs[hi][1]) / h) * 100);
