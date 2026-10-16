@@ -1504,6 +1504,7 @@ function layStrip(r, list, bottoms) {
     if (i >= list.length) { c.style.display = 'none'; continue; }
     c.style.display = '';
     c.classList.remove('dim', 'pop', 'crownhit', 'stripped');
+    c.style.visibility = '';                   // LJ fork: a wild-landing pop may have hidden it
     c.style.animationDelay = '';
     setCell(c, list[i], r, !!(bottoms && bottoms.includes(i)));
     c.style.left = left + 'px';
@@ -1743,6 +1744,12 @@ function crocFlash(kind) {
     : [rest, Object.assign({ offset: 0.35 }, peak), rest];
   return cv.animate(frames, { duration: ms, easing: 'ease-in-out' }).finished.catch(() => {});
 }
+// where a reel cell's symbol is actually drawn, in #fx px: its on-screen box measured and mapped back (the symbol
+// centre is the layout's cx / cy, not the cell rectangle's middle, and the board may be scaled in portrait)
+function cellCentre(c) {
+  const b = c.getBoundingClientRect(), f = fx.getBoundingClientRect(), sf = f.width / fx.offsetWidth || 1;
+  return [(b.left + b.width / 2 - f.left) / sf, (b.top + b.height / 2 - f.top) / sf];
+}
 // LJ fork: a wild lands. For each Levee Toll Coin wild (W) or croc Expanding Wild (XW) on the reel that just
 // stopped, a copy of the cell above the reel window (so the pop is not clipped) punches up and glows, with a ring
 // burst behind it, then settles back onto the real cell and is removed. Look: SKIN.wildLand + SKIN css .wildring.
@@ -1755,8 +1762,8 @@ function wildLand(r, col) {
   ks.forEach((k) => {
     const c = visCell(r, k); if (!c) return;
     const kind = col[k] === XWID ? 'xw' : 'w';
-    const [x, y, w, h] = cellRect(r, k);
-    const cx = x + w / 2, cy = y + h / 2;
+    const [, , w, h] = cellRect(r, k);
+    const [cx, cy] = cellCentre(c);
     const sc = parseFloat(c.style.getPropertyValue('--s')) || 1;
     const ring = document.createElement('div'); ring.className = 'wildring ' + kind;
     const R0 = Math.min(w, h) * 0.5;
@@ -1768,13 +1775,14 @@ function wildLand(r, col) {
     f.className = 'royalfall';                  // same box as the falling royals: a free-standing copy of a cell
     Object.assign(f.style, { left: cx - 128 + 'px', top: cy - 128 + 'px', translate: '', opacity: '' });
     fx.appendChild(f);
+    c.style.visibility = 'hidden';              // the copy stands in for it: no double image, no jump at the end
     const glow = kind === 'xw' ? WL.glowXW : WL.glowW;
     f.animate([
       { transform: `scale(${sc})`, filter: `brightness(1) drop-shadow(0 0 0 ${glow})` },
       { transform: `scale(${sc * WL.pop})`, filter: `brightness(1.6) drop-shadow(0 0 30px ${glow})`, offset: 0.28, easing: 'ease-in-out' },
       { transform: `scale(${sc * 0.97})`, filter: `brightness(1.25) drop-shadow(0 0 18px ${glow})`, offset: 0.6 },
       { transform: `scale(${sc})`, filter: `brightness(1) drop-shadow(0 0 0 ${glow})` },
-    ], { duration: ms, easing: 'ease-out', fill: 'forwards' }).finished.catch(() => {}).then(() => f.remove());
+    ], { duration: ms, easing: 'ease-out', fill: 'forwards' }).finished.catch(() => {}).then(() => { c.style.visibility = ''; f.remove(); });
   });
 }
 // one royal leaves the reel: a copy of its cell pops out (lift, scale-up, gold flash, ring + sparks), then tumbles
@@ -1782,7 +1790,7 @@ function wildLand(r, col) {
 function royalFall(r, k, delay) {
   const c = visCell(r, k);
   const [x, y, w, h] = cellRect(r, k);
-  const cx = x + w / 2, cy = y + h / 2;
+  const [cx, cy] = c ? cellCentre(c) : [x + w / 2, y + h / 2];
   const sc = c ? parseFloat(c.style.getPropertyValue('--s')) || 1 : 1;
   const side = r < 2 ? -1 : r > 2 ? 1 : (k % 2 ? 1 : -1);          // left board falls left, right board right
   const dx = side * (60 + Math.random() * 140), rot = side * (120 + Math.random() * 200);
