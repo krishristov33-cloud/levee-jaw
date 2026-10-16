@@ -912,6 +912,9 @@ const SKIN = {
   // PLACEHOLDER: final character animation
   crocFlash: { ack: 520, feature: 1100, glow: '#ffd15a' },
   xwGrow: 400,
+  // reel motion: ms = [kick up, speed up, slow down, settle] (fixed; the rest of a spin cruises), speed = top speed
+  // px/ms, over = overshoot px at the stop
+  reelRun: { normal: { ms: [70, 170, 420, 120], speed: 6.5, over: 30 }, turbo: { ms: [40, 90, 200, 70], speed: 7.5, over: 16 } },
   // anticipation: extra spin (ms) for each reel that is waited on, after 2 scatters / after a croc Expanding Wild;
   // turbo = factor in turbo mode
   antic: { scatter: 1400, wild: 1000, turbo: 0.5 },
@@ -1519,7 +1522,18 @@ let activeAnims = [];
 function rollReel(r, col, delayMs, durMs) {
   return new Promise((resolve) => {
     const cur = state.grid[r] || [visualSym(), visualSym(), visualSym()];
-    const fillN = Math.max(3, Math.round((durMs * 3.0) / P));
+    // LJ fork: fixed-length start and stop, constant top speed in between. A reel that spins longer (anticipation)
+    // only cruises longer at full speed: it never slows down early. Segments (ms): kick up, speed up, cruise,
+    // slow down (overshoot), settle. Too short a spin for all of them (turbo) scales them down, no cruise.
+    const turbo = speedMode === 'turbo';
+    const R = turbo ? SKIN.reelRun.turbo : SKIN.reelRun.normal;
+    let [K, A, D, S] = R.ms;
+    const fixed = K + A + D + S;
+    if (durMs < fixed) { const f = durMs / fixed; K *= f; A *= f; D *= f; S *= f; }
+    const C = Math.max(0, durMs - K - A - D - S);
+    const v = R.speed, ov = R.over, kick = 22;
+    const dA = (v * A) / 1.67, dD = (v * D) / 3;      // distances whose end / start speed is v (see the easings)
+    const fillN = Math.max(3, Math.round((dA + v * C + dD - ov - kick) / P - 3));
     const fill = Array.from({ length: fillN }, visualSym);
     // top -> bottom: pad, final(3), fillers, current(3), pad
     const list = [visualSym(), ...col, ...fill, ...cur, visualSym()];
@@ -1527,17 +1541,21 @@ function rollReel(r, col, delayMs, durMs) {
     const travel = (fillN + 3) * P;
     const st = stripEls[r];
     st.style.transform = `translateY(${-travel}px)`;
-    const ov = speedMode === 'turbo' ? 16 : 30;
+    const y1 = -travel - kick, y4 = ov;
+    const y2 = y1 + dA, y3 = Math.max(y2, y4 - dD);
+    const at = (ms) => Math.min(1, ms / durMs);
     const anim = st.animate([
       { transform: `translateY(${-travel}px)`, easing: 'ease-out' },
-      { transform: `translateY(${-travel - 22}px)`, offset: 0.07, easing: 'cubic-bezier(.45,0,.75,1)' },
-      { transform: `translateY(${ov}px)`, offset: 0.86, easing: 'cubic-bezier(.2,.6,.35,1)' },
+      { transform: `translateY(${y1}px)`, offset: at(K), easing: 'cubic-bezier(.4,0,.7,.5)' },      // speeds up to v
+      { transform: `translateY(${y2}px)`, offset: at(K + A), easing: 'linear' },                   // cruise at v
+      { transform: `translateY(${y3}px)`, offset: at(K + A + C), easing: 'cubic-bezier(.2,.6,.35,1)' }, // slows from v
+      { transform: `translateY(${y4}px)`, offset: at(K + A + C + D), easing: 'ease-in-out' },
       { transform: 'translateY(0px)' },
     ], { duration: durMs, delay: delayMs, fill: 'forwards' });
     activeAnims.push(anim);
     anim.pause(); stripReady(st).then(() => { if (anim.playState === 'paused') anim.play(); });
-    const blurOn = setTimeout(() => st.classList.add('rolling'), delayMs + durMs * 0.08);
-    const blurOff = setTimeout(() => st.classList.remove('rolling'), delayMs + durMs * 0.8);
+    const blurOn = setTimeout(() => st.classList.add('rolling'), delayMs + K + A * 0.5);
+    const blurOff = setTimeout(() => st.classList.remove('rolling'), delayMs + K + A + C + D * 0.45);
     anim.onfinish = () => {
       clearTimeout(blurOn); clearTimeout(blurOff); st.classList.remove('rolling');
       anim.cancel();
