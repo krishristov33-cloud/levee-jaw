@@ -109,7 +109,6 @@
   .royalfall{position:absolute;width:256px;height:256px;pointer-events:none;will-change:transform}
   .royalfall img{width:100%;height:100%;display:block}
   .popring{position:absolute;border-radius:50%;pointer-events:none}
-  .wildring{position:absolute;border-radius:50%;pointer-events:none}
   /* LJ fork: anticipation glow around a reel that is spinning longer (colours: SKIN css .antic.scatter / .wild) */
   .antic{position:absolute;border-radius:18px;pointer-events:none;overflow:hidden;border:7px solid var(--ac);
     box-shadow:0 0 50px 16px var(--ac),inset 0 0 50px 14px var(--ac);will-change:opacity;
@@ -360,8 +359,6 @@
     background:linear-gradient(180deg,#ffd15a 0%,#b0202e 22%,#5e0c14 50%,#b0202e 78%,#ffd15a 100%)}
   .popring{border:6px solid #ffd15a;box-shadow:0 0 22px 6px rgba(255,190,70,.8),inset 0 0 18px rgba(255,220,120,.7)}
   .spark{background:#ffe9a0;box-shadow:0 0 10px 3px #ffb43a}
-  .wildring.w{background:radial-gradient(circle,rgba(255,230,140,.85) 0%,rgba(255,200,70,.45) 45%,rgba(255,190,60,0) 70%)}
-  .wildring.xw{background:radial-gradient(circle,rgba(255,170,90,.85) 0%,rgba(255,90,40,.45) 45%,rgba(200,40,30,0) 70%)}
   .antic.scatter{--ac:#ffc83a;--ac2:rgba(255,236,160,.9)}         /* waiting for the 3rd Brass Maldo scatter */
   .antic.wild{--ac:#ff6a24;--ac2:rgba(255,214,110,.95)}             /* waiting for another croc Expanding Wild */
   html.portrait #banner.lite .t1{font-size:60px;padding:0 24px;text-align:center}
@@ -915,9 +912,10 @@ const SKIN = {
   // PLACEHOLDER: final character animation
   crocFlash: { ack: 520, feature: 1100, glow: '#ffd15a' },
   xwGrow: 400,
-  // a wild lands: pop = peak scale, ms = whole pop (turbo x0.6), glow colours for the coin wild / the croc wild
+  // a wild lands: a glow hit on the symbol. ms = whole flare (turbo x0.6), glowPx = glow radius, colours for the
+  // coin wild / the croc wild
   // lead = how early it lands, as a fraction of the reel's spin before it reaches its stop overshoot
-  wildLand: { pop: 1.3, ms: 560, glowW: '#ffd15a', glowXW: '#ff6a24', lead: 0.03 },
+  wildLand: { ms: 600, glowPx: 26, glowW: '#ffd15a', glowXW: '#ff6a24', lead: 0.03 },
   // anticipation: extra spin (ms) for each reel that is waited on, after 2 scatters / after a croc Expanding Wild;
   // turbo = factor in turbo mode
   antic: { scatter: 1400, wild: 1000, turbo: 0.5 },
@@ -1505,7 +1503,6 @@ function layStrip(r, list, bottoms) {
     if (i >= list.length) { c.style.display = 'none'; continue; }
     c.style.display = '';
     c.classList.remove('dim', 'pop', 'crownhit', 'stripped');
-    c.style.visibility = '';                   // LJ fork: a wild-landing pop may have hidden it
     c.style.animationDelay = '';
     setCell(c, list[i], r, !!(bottoms && bottoms.includes(i)));
     c.style.left = left + 'px';
@@ -1591,9 +1588,8 @@ function rollReel(r, col, delayMs, durMs, holdMs) {
     const anim = st.animate(frames, { duration: total, delay: delayMs, fill: 'forwards' });
     // LJ fork: wilds land a moment BEFORE the reel is fully stopped: just before it reaches its overshoot
     const tLand = delayMs + 0.86 * durMs + hold - SKIN.wildLand.lead * durMs;
-    wildHidden.forEach((v, key) => { if (key.startsWith(r + ',')) wildHidden.delete(key); });
     let landed = false;
-    const land = () => { if (landed) return; landed = true; wildLand(r, col, st); };
+    const land = () => { if (landed) return; landed = true; wildLand(r, col); };
     const watch = () => { if (landed || anim.playState === 'idle') return; if ((anim.currentTime || 0) >= tLand) land(); else requestAnimationFrame(watch); };
     requestAnimationFrame(watch);
     durMs = total;
@@ -1609,7 +1605,6 @@ function rollReel(r, col, delayMs, durMs, holdMs) {
       sfx.stop(r);
       if (col.includes(SP.SCATTER)) shake('scatterLand');
       land();                                  // LJ fork: (normally already done just before the stop)
-      wildHidden.forEach((v, key) => { const [rr, k] = key.split(',').map(Number); if (rr === r) { const c = visCell(r, k); if (c) c.style.visibility = 'hidden'; } });
       resolve();
     };
   });
@@ -1771,11 +1766,10 @@ function cellCentre(c) {
   const b = c.getBoundingClientRect(), f = fx.getBoundingClientRect(), sf = f.width / fx.offsetWidth || 1;
   return [(b.left + b.width / 2 - f.left) / sf, (b.top + b.height / 2 - f.top) / sf];
 }
-// LJ fork: a wild lands. For each Levee Toll Coin wild (W) or croc Expanding Wild (XW) on the reel that just
-// stopped, a copy of the cell above the reel window (so the pop is not clipped) punches up and glows, with a ring
-// burst behind it, then settles back onto the real cell and is removed. Look: SKIN.wildLand + SKIN css .wildring.
-const wildHidden = new Map();                  // 'reel,row' of a landed wild whose pop copy is still up (cell hidden)
-function wildLand(r, col, st) {
+// LJ fork: a wild lands. Each Levee Toll Coin wild (W) or croc Expanding Wild (XW) on a reel that is just
+// stopping gets a glow hit: the symbol itself flares (brightness + coloured glow) and fades back. Nothing moves or
+// scales, the symbol stays exactly where and how big it is. Look: SKIN.wildLand.
+function wildLand(r, col) {
   const ks = [0, 1, 2].filter((k) => col[k] === SP.WILD || col[k] === XWID);
   if (!ks.length) return;
   sfx.wildLand(col.includes(XWID));
@@ -1783,39 +1777,12 @@ function wildLand(r, col, st) {
   const WL = SKIN.wildLand, ms = speedMode === 'turbo' ? WL.ms * 0.6 : WL.ms;
   ks.forEach((k) => {
     const c = visCell(r, k); if (!c) return;
-    const kind = col[k] === XWID ? 'xw' : 'w';
-    const [, , w, h] = cellRect(r, k);
-    let [cx, cy] = cellCentre(c);
-    if (st) cy -= new DOMMatrix(getComputedStyle(st).transform).m42;   // where it comes to rest (strip at 0)
-    const sc = parseFloat(c.style.getPropertyValue('--s')) || 1;
-    const ring = document.createElement('div'); ring.className = 'wildring keep ' + kind;
-    const R0 = Math.min(w, h) * 0.5;
-    Object.assign(ring.style, { left: cx - R0 + 'px', top: cy - R0 + 'px', width: 2 * R0 + 'px', height: 2 * R0 + 'px' });
-    fx.appendChild(ring);
-    ring.animate([{ transform: 'scale(.4)', opacity: 1 }, { transform: 'scale(1.35)', opacity: 0 }], { duration: ms * 0.9, easing: 'ease-out', fill: 'forwards' })
-      .finished.catch(() => {}).then(() => ring.remove());
-    const f = c.cloneNode(true);
-    f.className = 'royalfall keep';             // same box as the falling royals: a free-standing copy of a cell
-    Object.assign(f.style, { left: cx - 128 + 'px', top: cy - 128 + 'px', translate: '', opacity: '' });
-    fx.appendChild(f);
-    c.style.visibility = 'hidden';              // the copy stands in for it: no double image, no jump at the end
-    const key = r + ',' + k, token = {};
-    wildHidden.set(key, token);
-    const glow = kind === 'xw' ? WL.glowXW : WL.glowW;
-    f.animate([
-      { transform: `scale(${sc})`, filter: `brightness(1) drop-shadow(0 0 0 ${glow})` },
-      { transform: `scale(${sc * WL.pop})`, filter: `brightness(1.6) drop-shadow(0 0 30px ${glow})`, offset: 0.28, easing: 'ease-in-out' },
-      { transform: `scale(${sc * 0.97})`, filter: `brightness(1.25) drop-shadow(0 0 18px ${glow})`, offset: 0.6 },
-      { transform: `scale(${sc})`, filter: `brightness(1) drop-shadow(0 0 0 ${glow})` },
-    ], { duration: ms, easing: 'ease-out', fill: 'forwards' });
-    // the real symbol comes back when the pop is over: on a timer, so nothing (a removed copy, a paused tab) can
-    // leave it hidden
-    setTimeout(() => {
-      f.remove();
-      if (wildHidden.get(key) !== token) return;              // the reel already spun again
-      wildHidden.delete(key);
-      const cc = visCell(r, k); if (cc) cc.style.visibility = '';
-    }, ms + 30);
+    const glow = col[k] === XWID ? WL.glowXW : WL.glowW;
+    c.animate([
+      { filter: `brightness(1) drop-shadow(0 0 0 ${glow})` },
+      { filter: `brightness(1.55) drop-shadow(0 0 ${WL.glowPx}px ${glow}) drop-shadow(0 0 ${WL.glowPx / 2}px ${glow})`, offset: 0.25 },
+      { filter: `brightness(1) drop-shadow(0 0 0 ${glow})` },
+    ], { duration: ms, easing: 'ease-out' });
   });
 }
 // one royal leaves the reel: a copy of its cell pops out (lift, scale-up, gold flash, ring + sparks), then tumbles
@@ -2092,7 +2059,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, speedMode === 'turbo' ? m
 const fx = $('fx'), linesLayer = $('lines'), overTop = $('overTop');
 function clearWins() {
   linesLayer.textContent = '';
-  [...fx.children].forEach((n) => { if (!n.classList.contains('keep')) n.remove(); });   // LJ fork: wild pops play out
+  fx.textContent = '';
   for (let r = 0; r < 5; r++) for (let k = 0; k < 3; k++) { const c = visCell(r, k); if (c) c.classList.remove('dim', 'pop', 'crownhit'); }
   xwEls.forEach((el) => el && el.classList.remove('dim'));
 }
@@ -2760,8 +2727,6 @@ function prewarm() {
   add('sweep', 'left:935px;width:120px');
   add('xwcol', 'left:600px;top:200px;width:240px;height:700px');   // LJ fork: the Expanding Wild column
   add('popring', 'left:700px;top:500px;width:200px;height:200px');
-  add('wildring w', 'left:700px;top:500px;width:200px;height:200px');
-  add('wildring xw', 'left:700px;top:500px;width:200px;height:200px');
   add('spark', 'left:760px;top:560px');
   add('linetag L', 'left:600px;top:600px').textContent = '0.00';
   add('linetag R', 'left:1300px;top:600px').textContent = '0.00';
